@@ -1,0 +1,137 @@
+# Risk Management Configuration
+# Conservative defaults for demo trading
+
+# Global Risk Parameters
+risk:
+  # Position-level limits
+  max_loss_per_cycle_usd: ${MAX_LOSS_PER_CYCLE}
+  max_profit_per_cycle_usd: 100.0  # Take profit target
+  
+  # Daily limits
+  max_daily_loss_usd: ${MAX_DAILY_LOSS}
+  max_daily_profit_usd: 500.0
+  max_daily_trades: 100
+  
+  # Exposure limits
+  max_open_exposure_usd: ${MAX_OPEN_EXPOSURE}
+  max_exposure_per_broker_usd: ${MAX_OPEN_EXPOSURE}
+  max_net_exposure_usd: 200.0
+  
+  # Time limits
+  max_holding_time_hours: ${MAX_HOLDING_TIME_HOURS}
+  min_holding_time_seconds: 5  # Minimum time before closing
+  max_order_age_seconds: 30  # Max time to execute an order
+  
+  # Margin requirements
+  min_free_margin_percent: ${MIN_FREE_MARGIN_PERCENT}
+  min_balance_usd: 10.0
+  
+  # Spread and execution quality
+  max_spread_points: ${MAX_SPREAD_POINTS}
+  max_execution_delay_seconds: ${MAX_EXECUTION_DELAY_SECONDS}
+  max_slippage_points: ${MAX_SLIPPAGE_POINTS}
+  max_spread_imbalance_percent: 50.0  # Max % difference between broker spreads
+  
+  # Order validation
+  max_order_size_lots: 1.0
+  min_order_size_lots: 0.01
+  lot_size_increment: 0.01
+  
+  # Position validation
+  max_positions_per_instrument: 10
+  max_total_open_positions: 20
+  
+  # Emergency controls
+  emergency_stop_enabled: true
+  manual_kill_switch: false
+  
+  # Reconciliation
+  reconciliation_interval_seconds: 60
+  position_mismatch_tolerance: 0.001  # lot tolerance
+  
+  # Retry logic
+  max_order_retries: 3
+  order_retry_delay_seconds: 2.0
+  
+  # Alert thresholds
+  warning_free_margin_percent: 70.0
+  critical_free_margin_percent: 30.0
+  
+  # Strategy-specific risk
+  strategy_risk:
+    paired_exit:
+      max_cycle_duration_minutes: 1440  # 24 hours
+      
+    protected_runner:
+      max_unhedged_exposure_usd: 50.0
+      max_runner_duration_hours: 48
+      
+    market_condition_exits:
+      max_volatility_percent: 5.0  # Max 5% price movement per minute
+      min_liquidity_score: 0.8
+      
+    adaptive_holding:
+      min_holding_minutes: 1
+      max_holding_minutes: 1440
+      
+    entry_optimization:
+      max_entry_delay_minutes: 10
+      max_spread_wait_seconds: 30
+
+# Risk Override Settings (For testing only)
+overrides:
+  # Disable all risk checks (DANGEROUS - for testing only)
+  disable_all_risk_checks: false
+  
+  # Bypass specific checks
+  bypass_max_loss_check: false
+  bypass_margin_check: false
+  bypass_exposure_check: false
+  bypass_spread_check: false
+  
+  # Emergency override (requires explicit approval)
+  emergency_override_enabled: ${ENABLE_EMERGENCY_STOP_OVERRIDE}
+
+# Monitoring and Alerting
+monitoring:
+  # Health check interval
+  health_check_interval_seconds: 30
+  
+  # Alert settings
+  alert_on_position_mismatch: true
+  alert_on_execution_failure: true
+  alert_on_risk_violation: true
+  alert_on_margin_warning: true
+  
+  # Notification channels
+  notification:
+    console: true
+    log_file: true
+    # email: false
+    # webhook: false
+    # telegram: false
+
+# Preflight Check Configuration
+preflight:
+  # Required checks before live trading
+  required_checks:
+    - account_balance
+    - margin_requirements
+    - contract_specs
+    - connection_health
+    - order_execution_test
+    - risk_parameters
+    - emergency_stop
+    
+  # Test order parameters
+  test_order:
+    instrument: "XAUUSD"
+    lot_size: 0.01
+    direction: "BUY"
+    timeout_seconds: 10
+    
+  # Connection health thresholds
+  connection:
+    min_successful_pings: 5
+    max_ping_latency_ms: 1000
+    max_packet_loss_percent: 1.0

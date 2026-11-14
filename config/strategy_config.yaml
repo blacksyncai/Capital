@@ -1,0 +1,301 @@
+# Strategy Configuration
+# Defines all trading strategies and their parameters
+
+strategies:
+  # Strategy A: Paired Exit
+  paired_exit:
+    enabled: true
+    description: "Open opposing positions and close both when combined P&L reaches target"
+    
+    parameters:
+      # P&L targets
+      take_profit_usd: 5.0
+      stop_loss_usd: 3.0
+      
+      # Time-based exits
+      max_holding_minutes: 1440  # 24 hours
+      time_check_interval_seconds: 60
+      
+      # Position sizing
+      lot_size: ${INITIAL_LOT_SIZE}
+      dynamic_sizing: false
+      
+      # Entry conditions
+      max_entry_spread_points: 10
+      min_spread_stability_seconds: 30
+      
+      # Exit conditions
+      exit_on_target: true
+      exit_on_stop: true
+      exit_on_time: true
+      exit_on_margin_warning: true
+      
+      # Performance tracking
+      track_individual_legs: true
+      track_combined_pnl: true
+      
+    risk_overrides:
+      max_loss_per_cycle: 3.0
+      max_holding_time: 1440
+    
+    weights:
+      pnl_weight: 0.4
+      time_weight: 0.2
+      risk_weight: 0.4
+
+  # Strategy B: Protected Runner
+  protected_runner:
+    enabled: true
+    description: "Close one position and allow the remaining to run with protective stop"
+    
+    parameters:
+      # Runner conditions
+      runner_trigger_conditions:
+        - combined_pnl_usd: 10.0  # Trigger when combined P&L reaches $10
+        - holding_time_minutes: 60  # Or after 60 minutes
+        - volatility_trigger: true  # Or on high volatility
+      
+      # Which leg to close
+      close_leg: "losing"  # Options: losing, winning, broker_a, broker_b
+      
+      # Protective stop for runner
+      stop_loss_usd: 5.0
+      trailing_stop_enabled: true
+      trailing_stop_distance_usd: 2.0
+      trailing_stop_activation_usd: 3.0
+      
+      # Time limits
+      max_runner_duration_minutes: 1440
+      
+      # Position sizing
+      lot_size: ${INITIAL_LOT_SIZE}
+      
+      # Risk management
+      max_unhedged_exposure_usd: 50.0
+      max_drawdown_usd: 10.0
+      
+    risk_overrides:
+      max_loss_per_cycle: 10.0
+      max_unhedged_exposure: 50.0
+    
+    weights:
+      profit_potential: 0.5
+      risk_adjusted: 0.5
+
+  # Strategy C: Market Condition Exits
+  market_condition_exits:
+    enabled: true
+    description: "Exit based on volatility, momentum, spread conditions, and market sessions"
+    
+    parameters:
+      # Volatility conditions
+      volatility:
+        calculation_period_minutes: 15
+        exit_on_high_volatility: true
+        high_volatility_threshold: 0.02  # 2% price movement
+        exit_on_low_volatility: false
+        low_volatility_threshold: 0.001  # 0.1% price movement
+      
+      # Momentum conditions
+      momentum:
+        calculation_period_minutes: 30
+        exit_on_strong_momentum: true
+        momentum_threshold: 0.01  # 1% price movement
+        exit_on_weak_momentum: false
+        
+      # Spread conditions
+      spread:
+        exit_on_widening_spread: true
+        spread_widening_threshold_percent: 50
+        exit_on_narrow_spread: false
+        narrow_spread_threshold_points: 1
+        
+      # Market session conditions
+      sessions:
+        london_open: "08:00"
+        london_close: "17:00"
+        new_york_open: "13:00"
+        new_york_close: "22:00"
+        asian_open: "00:00"
+        asian_close: "09:00"
+        
+        exit_before_session_end_minutes: 30
+        exit_at_session_end: true
+        
+      # Short-term price behavior
+      price_behavior:
+        exit_on_reversal: true
+        reversal_threshold_percent: 0.5
+        exit_on_consolidation: false
+        consolidation_threshold_percent: 0.1
+      
+      # Time-based
+      time_based:
+        exit_before_weekend_hours: 24
+        exit_before_holiday_hours: 48
+    
+    risk_overrides:
+      max_loss_per_cycle: 5.0
+    
+    weights:
+      volatility: 0.3
+      momentum: 0.25
+      spread: 0.2
+      session: 0.15
+      price_behavior: 0.1
+
+  # Strategy D: Adaptive Holding Periods
+  adaptive_holding:
+    enabled: true
+    description: "Compare different holding periods to optimize P&L and costs"
+    
+    parameters:
+      # Holding period configurations to test
+      holding_periods_minutes: [1, 5, 15, 30, 60, 120, 240, 480, 1440]
+      
+      # Adaptive selection
+      adaptive_selection: true
+      selection_criteria: "sharpe_ratio"  # Options: pnl, sharpe_ratio, win_rate, profit_factor
+      selection_window_trades: 100
+      
+      # Performance metrics
+      metrics:
+        net_pnl: true
+        win_rate: true
+        profit_factor: true
+        sharpe_ratio: true
+        max_drawdown: true
+        average_holding_time: true
+      
+      # Cost consideration
+      consider_swap_costs: true
+      consider_commission: true
+      consider_slippage: true
+      
+      # Minimum holding time
+      min_holding_minutes: 1
+      max_holding_minutes: 1440
+      
+      # Lot size
+      lot_size: ${INITIAL_LOT_SIZE}
+    
+    risk_overrides:
+      max_loss_per_cycle: 5.0
+    
+    weights:
+      pnl: 0.4
+      risk: 0.3
+      frequency: 0.2
+      costs: 0.1
+
+  # Strategy E: Entry Optimization
+  entry_optimization:
+    enabled: true
+    description: "Delay entries until spreads and execution conditions improve"
+    
+    parameters:
+      # Spread conditions for entry
+      max_entry_spread_points: 5
+      ideal_spread_points: 1
+      spread_wait_timeout_seconds: 30
+      
+      # Execution quality conditions
+      max_execution_delay_ms: 500
+      max_slippage_points: 2
+      
+      # Market stability conditions
+      min_stability_period_seconds: 60
+      max_price_volatility_percent: 0.5
+      
+      # Time-based entry windows
+      entry_windows:
+        - start: "00:00"
+          end: "23:59"
+          priority: 1
+      
+      # Queue management
+      max_queued_orders: 10
+      queue_timeout_seconds: 60
+      
+      # Position sizing
+      lot_size: ${INITIAL_LOT_SIZE}
+      
+      # Early exit conditions
+      exit_if_conditions_worsen: true
+      worsening_threshold_percent: 10
+    
+    risk_overrides:
+      max_loss_per_cycle: 3.0
+    
+    weights:
+      execution_quality: 0.5
+      spread_cost: 0.3
+      opportunity_cost: 0.2
+
+# Global Strategy Settings
+settings:
+  # Default strategy
+  default_strategy: "paired_exit"
+  
+  # Strategy rotation
+  rotate_strategies: false
+  rotation_interval_minutes: 1440
+  rotation_strategies: ["paired_exit", "protected_runner", "market_condition_exits"]
+  
+  # Multi-strategy mode
+  multi_strategy_enabled: false
+  strategy_weights:
+    paired_exit: 0.4
+    protected_runner: 0.3
+    market_condition_exits: 0.2
+    adaptive_holding: 0.05
+    entry_optimization: 0.05
+  
+  # Performance tracking
+  track_individual_strategies: true
+  track_combined_performance: true
+  
+  # Backtesting
+  backtest:
+    enabled: ${ENABLE_BACKTESTING}
+    historical_data_days: 30
+    out_of_sample_days: 7
+    walk_forward_window_days: 14
+    
+  # Optimization
+  optimization:
+    enabled: false
+    target_metric: "net_pnl"
+    max_iterations: 100
+    population_size: 20
+
+# Strategy Comparison Settings
+comparison:
+  # Metrics to compare
+  metrics:
+    - net_pnl_usd
+    - gross_pnl_usd
+    - net_pnl_with_rebates_usd
+    - max_drawdown_usd
+    - max_drawdown_percent
+    - average_profit_per_trade_usd
+    - average_loss_per_trade_usd
+    - win_rate_percent
+    - profit_factor
+    - sharpe_ratio
+    - sortino_ratio
+    - average_holding_time_minutes
+    - trades_per_hour
+    - execution_cost_usd
+    - swap_cost_usd
+    - commission_cost_usd
+    - slippage_cost_usd
+    - eligible_rebates_usd
+    - confirmed_rebates_usd
+  
+  # Comparison period
+  period_days: 30
+  
+  # Statistical significance
+  min_trades_for_significance: 100
+  confidence_level: 0.95

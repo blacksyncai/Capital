@@ -1,0 +1,179 @@
+# Broker Configuration
+# This file defines broker-specific settings for Vantage and JustMarkets
+
+brokers:
+  vantage:
+    # Broker identification
+    name: "Vantage Markets"
+    broker_id: "vantage"
+    
+    # Connection settings
+    demo:
+      server: "Vantage-Demo"
+      server_address: "54.254.150.105:443"
+      login: ${VANTAGE_LOGIN}
+      password: ${VANTAGE_PASSWORD}
+      account_type: "DEMO"
+    
+    live:
+      server: "Vantage-Live"
+      server_address: "54.254.150.105:443"
+      login: ${VANTAGE_LIVE_LOGIN}
+      password: ${VANTAGE_LIVE_PASSWORD}
+      account_type: "REAL"
+    
+    # MT5 terminal path (Windows)
+    mt5_path: ${VANTAGE_MT5_PATH}
+    
+    # Instrument mappings (Broker symbol -> Standard symbol)
+    instrument_mapping:
+      "XAUUSD": "XAUUSD"
+      "XAGUSD": "XAGUSD"
+      "BTCUSD": "BTCUSD"
+      "ETHUSD": "ETHUSD"
+      "EURUSD": "EURUSD"
+      "GBPUSD": "GBPUSD"
+      "USDJPY": "USDJPY"
+    
+    # Contract specifications (per instrument)
+    contract_specs:
+      XAUUSD:
+        contract_size: 100  # ounces
+        tick_value: 0.01    # USD per tick per standard lot
+        tick_size: 0.01     # points
+        margin_requirement_percent: 0.5  # 0.5% margin
+        swap_long: -5.0     # USD per lot per night
+        swap_short: 2.0     # USD per lot per night
+        trading_hours: "00:00-23:59"  # 24/5
+        
+      BTCUSD:
+        contract_size: 1    # BTC
+        tick_value: 1.0     # USD per tick per standard lot
+        tick_size: 0.01     # points
+        margin_requirement_percent: 2.0  # 2% margin
+        swap_long: -10.0    # USD per lot per night
+        swap_short: 5.0     # USD per lot per night
+        trading_hours: "00:00-23:59"  # 24/7
+    
+    # Execution settings
+    execution:
+      max_retries: 3
+      retry_delay_seconds: 1.0
+      order_timeout_seconds: 10
+      
+    # Market data settings
+    market_data:
+      tick_buffer_size: 10000
+      max_spread_points: 10
+      
+    # IB Rebate configuration
+    ib_rebate:
+      rebate_per_standard_lot: ${VANTAGE_REBATE_PER_LOT}
+      min_holding_time_minutes: ${VANTAGE_MIN_HOLDING_TIME_MINUTES}
+      eligible_instruments: ${VANTAGE_ELIGIBLE_INSTRUMENTS}
+      
+    # Risk limits (broker-specific)
+    risk:
+      max_orders_per_minute: 10
+      max_open_positions: 50
+      
+  justmarkets:
+    # Broker identification
+    name: "JustMarkets"
+    broker_id: "justmarkets"
+    
+    # Connection settings
+    demo:
+      server: "JustMarkets-Demo"
+      server_address: "185.141.63.241:443"
+      login: ${JUSTMARKETS_LOGIN}
+      password: ${JUSTMARKETS_PASSWORD}
+      account_type: "DEMO"
+    
+    live:
+      server: "JustMarkets-Live"
+      server_address: "185.141.63.241:443"
+      login: ${JUSTMARKETS_LIVE_LOGIN}
+      password: ${JUSTMARKETS_LIVE_PASSWORD}
+      account_type: "REAL"
+    
+    # MT5 terminal path (Windows)
+    mt5_path: ${JUSTMARKETS_MT5_PATH}
+    
+    # Instrument mappings
+    instrument_mapping:
+      "XAUUSD": "XAUUSD"
+      "XAGUSD": "XAGUSD"
+      "BTCUSD": "BTCUSD"
+      "ETHUSD": "ETHUSD"
+      "EURUSD": "EURUSD"
+      "GBPUSD": "GBPUSD"
+      "USDJPY": "USDJPY"
+    
+    # Contract specifications
+    contract_specs:
+      XAUUSD:
+        contract_size: 100  # ounces
+        tick_value: 0.01    # USD per tick per standard lot
+        tick_size: 0.01     # points
+        margin_requirement_percent: 1.0  # 1% margin
+        swap_long: -8.0     # USD per lot per night
+        swap_short: 4.0     # USD per lot per night
+        trading_hours: "00:00-23:59"
+        
+      BTCUSD:
+        contract_size: 1    # BTC
+        tick_value: 1.0     # USD per tick per standard lot
+        tick_size: 0.01     # points
+        margin_requirement_percent: 5.0  # 5% margin
+        swap_long: -15.0    # USD per lot per night
+        swap_short: 7.0     # USD per lot per night
+        trading_hours: "00:00-23:59"
+    
+    # Execution settings
+    execution:
+      max_retries: 3
+      retry_delay_seconds: 1.0
+      order_timeout_seconds: 10
+      
+    # Market data settings
+    market_data:
+      tick_buffer_size: 10000
+      max_spread_points: 10
+      
+    # IB Rebate configuration
+    ib_rebate:
+      rebate_per_standard_lot: ${JUSTMARKETS_REBATE_PER_LOT}
+      min_holding_time_minutes: ${JUSTMARKETS_MIN_HOLDING_TIME_MINUTES}
+      eligible_instruments: ${JUSTMARKETS_ELIGIBLE_INSTRUMENTS}
+      
+    # Risk limits (broker-specific)
+    risk:
+      max_orders_per_minute: 10
+      max_open_positions: 50
+
+# Global broker settings
+settings:
+  # Default trading mode
+  trading_mode: ${TRADING_MODE}
+  
+  # Enable live trading (MUST be explicitly enabled)
+  live_trading_enabled: ${LIVE_TRADING_ENABLED}
+  
+  # Primary instrument for trading
+  primary_instrument: ${PRIMARY_INSTRUMENT}
+  
+  # Lot sizes configuration
+  lot_sizes:
+    initial: ${INITIAL_LOT_SIZE}
+    available: [0.01, 0.02, 0.05, 0.10, 0.20, 0.25, 0.50, 1.0]
+    
+  # Position direction configuration
+  position_directions:
+    default: "BUY_SELL"  # BUY on broker A, SELL on broker B
+    reverse: "SELL_BUY"  # SELL on broker A, BUY on broker B
+    
+  # Weekend trading (for BTCUSD)
+  weekend_trading:
+    enabled: true
+    instruments: ["BTCUSD", "ETHUSD"]

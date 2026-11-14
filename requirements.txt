@@ -1,0 +1,66 @@
+# Cross-Broker Trading System Dependencies
+
+# Core Python
+python>=3.10
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Database
+psycopg2-binary>=2.9.0
+sqlalchemy>=2.0.0
+
+# Web Framework
+fastapi>=0.100.0
+uvicorn>=0.20.0
+
+# Configuration
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+pyyaml>=6.0.0
+
+# Trading (Install manually - see notes below)
+# MetaTrader5>=5.0.0
+
+# Async support
+greenlet>=2.0.0
+asyncio-throttle>=1.0.2
+
+# Utilities
+requests>=2.31.0
+httpx>=0.25.0
+
+# Logging
+structlog>=23.0.0
+colorlog>=6.8.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+
+# Development
+black>=23.0.0
+flake8>=6.1.0
+isort>=5.12.0
+mypy>=1.5.0
+
+# AI/ML (Optional for research module)
+# scikit-learn>=1.3.0
+# pandas-ta>=0.3.14
+# ta>=0.10.0
+
+# Dashboard
+jinja2>=3.1.0
+python-multipart>=0.0.6
+
+# Notes:
+# 1. MetaTrader5 package must be installed separately:
+#    pip install MetaTrader5
+#    OR download from https://www.mql5.com/en/docs/integration/python_metatrader5
+#
+# 2. For Windows VPS deployment, use:
+#    pip install MetaTrader5 --only-binary :all:
+#
+# 3. PostgreSQL must be installed separately or use Railway/other cloud provider

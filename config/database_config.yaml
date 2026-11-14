@@ -1,0 +1,174 @@
+# Database Configuration
+# PostgreSQL database settings for the trading system
+
+database:
+  # Connection settings
+  host: ${DB_HOST}
+  port: ${DB_PORT}
+  name: ${DB_NAME}
+  user: ${DB_USER}
+  password: ${DB_PASSWORD}
+  
+  # SSL settings (for cloud databases)
+  ssl:
+    enabled: false
+    mode: "require"  # Options: disable, allow, prefer, require
+    ca_cert: null
+    
+  # Connection pool settings
+  pool:
+    min_size: 5
+    max_size: 20
+    max_overflow: 10
+    timeout_seconds: 30
+    recycle_seconds: 3600
+    
+  # Table settings
+  tables:
+    # Trade data
+    trades:
+      table_name: "trades"
+      batch_insert_size: 100
+      
+    # Market data
+    market_data:
+      table_name: "market_data"
+      batch_insert_size: 1000
+      retention_days: 90
+      
+    # Account data
+    accounts:
+      table_name: "accounts"
+      
+    # Positions
+    positions:
+      table_name: "positions"
+      
+    # Orders
+    orders:
+      table_name: "orders"
+      
+    # IB Rebates
+    rebates:
+      table_name: "ib_rebates"
+      
+    # Strategy performance
+    strategy_performance:
+      table_name: "strategy_performance"
+      
+    # Risk violations
+    risk_violations:
+      table_name: "risk_violations"
+      
+    # System logs
+    system_logs:
+      table_name: "system_logs"
+      retention_days: 30
+      
+    # Execution errors
+    execution_errors:
+      table_name: "execution_errors"
+      retention_days: 90
+      
+    # Trade cycles
+    trade_cycles:
+      table_name: "trade_cycles"
+
+  # Index settings
+  indexes:
+    create_indexes: true
+    
+    # Trade indexes
+    trades:
+      - columns: ["trade_id"]
+        unique: true
+      - columns: ["broker_id", "account_id"]
+      - columns: ["instrument"]
+      - columns: ["open_time"]
+      - columns: ["close_time"]
+      - columns: ["status"]
+      
+    # Market data indexes
+    market_data:
+      - columns: ["broker_id", "instrument", "timestamp"]
+        unique: true
+      - columns: ["instrument"]
+      - columns: ["timestamp"]
+      
+    # Account indexes
+    accounts:
+      - columns: ["broker_id", "account_id"]
+        unique: true
+      - columns: ["broker_id"]
+      
+    # Position indexes
+    positions:
+      - columns: ["position_id"]
+        unique: true
+      - columns: ["broker_id", "account_id"]
+      - columns: ["instrument"]
+      - columns: ["open_time"]
+      - columns: ["close_time"]
+      
+    # Order indexes
+    orders:
+      - columns: ["order_id"]
+        unique: true
+      - columns: ["broker_id", "account_id"]
+      - columns: ["instrument"]
+      - columns: ["status"]
+      - columns: ["timestamp"]
+      
+    # Rebate indexes
+    rebates:
+      - columns: ["rebate_id"]
+        unique: true
+      - columns: ["broker_id", "trade_id"]
+      - columns: ["status"]
+      - columns: ["timestamp"]
+      
+    # Strategy performance indexes
+    strategy_performance:
+      - columns: ["strategy_id", "timestamp"]
+        unique: true
+      - columns: ["strategy_id"]
+      - columns: ["timestamp"]
+
+  # Backup settings
+  backup:
+    enabled: false
+    directory: "backups"
+    frequency_hours: 24
+    retention_days: 30
+    compress: true
+    
+  # Maintenance settings
+  maintenance:
+    # Cleanup old data
+    cleanup:
+      enabled: true
+      frequency_hours: 24
+      old_data_days: 90
+      
+    # Optimize database
+    optimize:
+      enabled: true
+      frequency_hours: 168  # Weekly
+      
+    # Vacuum database
+    vacuum:
+      enabled: true
+      frequency_hours: 168
+      
+  # Migration settings
+  migrations:
+    directory: "migrations"
+    version_table: "schema_versions"
+
+  # Test database (for development)
+  test:
+    host: ${DB_HOST}
+    port: ${DB_PORT}
+    name: "cross_broker_trading_test"
+    user: ${DB_USER}
+    password: ${DB_PASSWORD}
