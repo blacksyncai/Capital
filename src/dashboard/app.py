@@ -4,16 +4,18 @@ Dashboard Application
 FastAPI web application for the trading dashboard.
 """
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from typing import Optional, Dict, Any
+from typing import AsyncIterator, Optional, Dict, Any
 import logging
 from pathlib import Path
 
 from ..core.config import get_config
 from ..core.logging import get_logger
+from ..execution.execution_worker import start_execution_worker, stop_execution_worker
 from .routes import router as api_router
 
 
@@ -25,18 +27,37 @@ logger = logging.getLogger(__name__)
 _app: Optional[FastAPI] = None
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """
+    Start/stop the background execution worker with the app lifecycle.
+
+    Without this, nothing ever calls ExecutionWorker.start(), so every
+    call that goes through it (trade/open, trade/close, emergency/stop,
+    system/reconcile) fails immediately with
+    ExecutionError("Execution worker is not running").
+    """
+    start_execution_worker()
+    logger.info("Execution worker started on application startup")
+    try:
+        yield
+    finally:
+        stop_execution_worker()
+        logger.info("Execution worker stopped on application shutdown")
+
+
 def create_app() -> FastAPI:
     """
     Create the FastAPI application.
-    
+
     Returns:
         FastAPI application instance
     """
     global _app
-    
+
     if _app is not None:
         return _app
-    
+
     # Create app
     app = FastAPI(
         title="Cross-Broker Trading System",
@@ -44,7 +65,8 @@ def create_app() -> FastAPI:
         version="0.1.0",
         docs_url="/api/docs",
         redoc_url="/api/redoc",
-        openapi_url="/api/openapi.json"
+        openapi_url="/api/openapi.json",
+        lifespan=_lifespan
     )
     
     # Configure CORS
@@ -70,7 +92,7 @@ def create_app() -> FastAPI:
     
     # Include API routes
     app.include_router(api_router, prefix="/api")
-    
+
     # Root endpoint
     @app.get("/")
     async def root(request: Request):
