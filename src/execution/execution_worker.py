@@ -18,8 +18,8 @@ from ..brokers.base_broker import BaseBroker, TickData, Position
 from ..core.config import get_config
 from ..core.logging import get_logger
 from ..models.trade_cycles import TradeCycle, CycleStatus
-from .order_manager import OrderManager, PairedOrderRequest, OrderResult
-from .trade_state import TradeStateManager, TradeState, ReconciliationResult
+from .order_manager import OrderManager, PairedOrderRequest, OrderResult, get_order_manager
+from .trade_state import TradeStateManager, TradeState, ReconciliationResult, get_trade_state_manager
 
 
 # Configure logging
@@ -56,10 +56,27 @@ class ExecutionWorker:
     - Handling errors
     """
     
-    def __init__(self):
-        """Initialize the execution worker."""
-        self.order_manager = OrderManager()
-        self.trade_state_manager = TradeStateManager()
+    def __init__(
+        self,
+        order_manager: Optional[OrderManager] = None,
+        trade_state_manager: Optional[TradeStateManager] = None,
+    ):
+        """
+        Initialize the execution worker.
+
+        Args:
+            order_manager: Optional override, for tests. Defaults to the
+                shared process-wide singleton so the risk engine, this
+                worker, and the dashboard routes all see the same broker
+                connections and the same trade state (see risk_engine.py
+                for why that matters - a private copy here was previously
+                how emergency stop's two halves ended up disagreeing).
+            trade_state_manager: Optional override, for tests.
+        """
+        self.order_manager = order_manager if order_manager is not None else get_order_manager()
+        self.trade_state_manager = (
+            trade_state_manager if trade_state_manager is not None else get_trade_state_manager()
+        )
         self.logger = get_logger("execution.worker")
         
         # Configuration

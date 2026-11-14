@@ -5,11 +5,13 @@ Manages the state of paired trades and ensures consistency across brokers.
 Provides reconciliation, state tracking, and recovery functionality.
 """
 
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Dict, List, Any, Tuple, Set
+from typing import Optional, Dict, List, Any, Tuple, Set, Callable
 import logging
 
 from ..brokers.base_broker import BaseBroker, Position, PositionSide, PositionStatus
@@ -39,6 +41,21 @@ class ReconciliationError(TradeStateError):
 
 class PositionMismatchError(ReconciliationError):
     """Position mismatch error."""
+    pass
+
+
+class TradeStatePersistenceError(TradeStateError):
+    """
+    Raised when a trade-state change could not be durably persisted after
+    retrying.
+
+    This must never be swallowed: it means our in-memory view of trade
+    state (which cycles are open, which positions back them) may no longer
+    match what a restart would recover from the database. Catching this
+    and continuing as if nothing happened is exactly the failure mode that
+    made emergency stop and restart recovery unreliable before - a cycle
+    that "exists" only in memory is invisible to anything that restarts.
+    """
     pass
 
 
@@ -129,54 +146,114 @@ class TradeStateManager:
         self.max_active_cycles = 10
         self.reconciliation_interval = 60  # seconds
         self.position_mismatch_tolerance = 0.001  # lot tolerance
-        
+        self.db_max_retries = 3
+        self.db_retry_delay = 0.5  # seconds
+
         self._initialized = False
-    
+        # Guards initialize(): it is now called both from the FastAPI
+        # lifespan (risk engine startup) and from ExecutionWorker's own
+        # background thread, against this same shared singleton. Without
+        # this, both could race past the "if self._initialized: return"
+        # check and double-initialize (double DB load, double connect_all).
+        self._init_lock = threading.Lock()
+
+    def _with_db_retries(self, fn: Callable[[], None], description: str) -> None:
+        """
+        Run a database write, retrying a bounded number of times on
+        failure. If every attempt fails, raise TradeStatePersistenceError
+        rather than log-and-continue - a caller that ignores this exception
+        is explicitly choosing to proceed with state that may not survive
+        a restart, which should never be the silent default.
+        """
+        last_error: Optional[Exception] = None
+        for attempt in range(self.db_max_retries):
+            try:
+                fn()
+                return
+            except Exception as e:
+                last_error = e
+                self.logger.error(
+                    f"{description} failed (attempt {attempt + 1}/{self.db_max_retries}): {e}"
+                )
+                if attempt < self.db_max_retries - 1:
+                    time.sleep(self.db_retry_delay)
+
+        self.logger.critical(f"{description} failed after {self.db_max_retries} attempts: {last_error}")
+        raise TradeStatePersistenceError(
+            f"{description} failed after {self.db_max_retries} attempts: {last_error}"
+        )
+
     def initialize(self) -> None:
-        """Initialize the trade state manager."""
+        """
+        Initialize the trade state manager.
+
+        Raises:
+            TradeStatePersistenceError: If existing cycles cannot be loaded
+                from the database. Starting up with an empty active_cycles
+                dict when the database is simply unreachable would make
+                emergency stop and reconciliation silently cover nothing -
+                that is worse than refusing to start.
+        """
         if self._initialized:
             return
-        
-        self.order_manager.initialize()
-        self.order_manager.connect_all()
-        
-        # Load existing cycles from database
-        self._load_cycles_from_db()
-        
-        self._initialized = True
-        self.logger.info("Trade state manager initialized")
-    
+
+        with self._init_lock:
+            if self._initialized:
+                return
+
+            self.order_manager.initialize()
+            self.order_manager.connect_all()
+
+            # Load existing cycles from database
+            try:
+                self._load_cycles_from_db()
+            except Exception as e:
+                self.logger.critical(
+                    f"Failed to load trade cycles from database on startup: {e}. "
+                    f"Refusing to start with unknown trade state."
+                )
+                raise TradeStatePersistenceError(
+                    f"Failed to load trade cycles from database on startup: {e}"
+                )
+
+            self._initialized = True
+            self.logger.info("Trade state manager initialized")
+
     def _load_cycles_from_db(self) -> None:
-        """Load trade cycles from database."""
-        try:
-            with self.db.get_session() as session:
-                # Load active cycles
-                active_cycles = session.query(TradeCycle).filter(
-                    TradeCycle.status.in_([
-                        CycleStatus.INITIATED.value,
-                        CycleStatus.OPENING.value,
-                        CycleStatus.OPEN.value,
-                        CycleStatus.CLOSING.value
-                    ])
-                ).all()
-                
-                for cycle in active_cycles:
-                    self.active_cycles[cycle.cycle_id] = TradeState(
-                        cycle_id=cycle.cycle_id,
-                        status=CycleStatus(cycle.status),
-                        broker_a_position_id=cycle.position_a_id,
-                        broker_b_position_id=cycle.position_b_id,
-                        instrument=cycle.instrument,
-                        lot_size=cycle.lot_size,
-                        direction=cycle.direction,
-                        opened_time=cycle.opened_time,
-                        closed_time=cycle.closed_time,
-                        strategy_id=cycle.strategy_id
-                    )
-                
-                self.logger.info(f"Loaded {len(active_cycles)} active cycles from database")
-        except Exception as e:
-            self.logger.error(f"Error loading cycles from database: {e}")
+        """
+        Load trade cycles from database.
+
+        Raises:
+            Exception: Propagates any database error rather than swallowing
+                it - callers (initialize()) decide how to react, but this
+                method itself never hides a failure to load state.
+        """
+        with self.db.get_session() as session:
+            # Load active cycles
+            active_cycles = session.query(TradeCycle).filter(
+                TradeCycle.status.in_([
+                    CycleStatus.INITIATED.value,
+                    CycleStatus.OPENING.value,
+                    CycleStatus.OPEN.value,
+                    CycleStatus.CLOSING.value
+                ])
+            ).all()
+
+            for cycle in active_cycles:
+                self.active_cycles[cycle.cycle_id] = TradeState(
+                    cycle_id=cycle.cycle_id,
+                    status=CycleStatus(cycle.status),
+                    broker_a_position_id=cycle.position_a_id,
+                    broker_b_position_id=cycle.position_b_id,
+                    instrument=cycle.instrument,
+                    lot_size=cycle.lot_size,
+                    direction=cycle.direction,
+                    opened_time=cycle.opened_time,
+                    closed_time=cycle.closed_time,
+                    strategy_id=cycle.strategy_id
+                )
+
+            self.logger.info(f"Loaded {len(active_cycles)} active cycles from database")
     
     def create_cycle(
         self,
@@ -204,9 +281,13 @@ class TradeStateManager:
             Cycle ID
         """
         cycle_id = f"cycle_{uuid.uuid4().hex[:12]}"
-        
-        # Create cycle record in database (optional for testing)
-        try:
+
+        # Create cycle record in database. A cycle that cannot be durably
+        # recorded must not be allowed to silently proceed as in-memory-only:
+        # a crash before the next successful write would then lose track of
+        # it entirely, which is exactly the scenario emergency stop and
+        # restart recovery exist to cover.
+        def _write():
             with self.db.get_session() as session:
                 cycle = TradeCycle(
                     cycle_id=cycle_id,
@@ -223,9 +304,8 @@ class TradeStateManager:
                 )
                 session.add(cycle)
                 session.commit()
-        except Exception as e:
-            # Log but don't fail - allows testing without database
-            self.logger.warning(f"Could not save cycle to database (testing mode?): {e}")
+
+        self._with_db_retries(_write, f"Creating cycle record {cycle_id}")
         
         # Create state
         state = TradeState(
@@ -371,8 +451,16 @@ class TradeStateManager:
             
         except Exception as e:
             state.status = CycleStatus.ERROR
-            self._update_cycle_in_db(state)
             self.logger.error(f"Failed to open cycle {cycle_id}: {e}")
+            try:
+                self._update_cycle_in_db(state)
+            except TradeStatePersistenceError as persist_error:
+                # Don't let a persistence failure during error-handling bury
+                # the original failure that got us here - surface both.
+                raise TradeStateError(
+                    f"Failed to open cycle: {e}. Additionally, could not persist "
+                    f"the resulting ERROR status: {persist_error}"
+                )
             raise TradeStateError(f"Failed to open cycle: {e}")
     
     def close_cycle(self, cycle_id: str, reason: str = "manual", comment: str = "") -> TradeState:
@@ -445,8 +533,17 @@ class TradeStateManager:
             
         except Exception as e:
             state.status = CycleStatus.ERROR
-            self._update_cycle_in_db(state)
             self.logger.error(f"Failed to close cycle {cycle_id}: {e}")
+            try:
+                self._update_cycle_in_db(state)
+            except TradeStatePersistenceError as persist_error:
+                # Positions may already be closed on the broker side at this
+                # point - never let a persistence failure here disappear
+                # silently, and never let it bury the original failure either.
+                raise TradeStateError(
+                    f"Failed to close cycle: {e}. Additionally, could not persist "
+                    f"the resulting ERROR status: {persist_error}"
+                )
             raise TradeStateError(f"Failed to close cycle: {e}")
     
     def close_cycle_by_position(
@@ -757,66 +854,83 @@ class TradeStateManager:
     def _update_cycle_in_db(self, state: TradeState) -> None:
         """
         Update cycle state in database.
-        
+
+        Raises:
+            TradeStatePersistenceError: If the update cannot be persisted
+                after retrying. Never swallowed - by the time this is
+                called, broker-side actions (an open or close) have
+                typically already happened, so losing this write silently
+                would leave our recorded state wrong about something real.
+
         Args:
             state: TradeState to update
         """
-        try:
+        def _write():
             with self.db.get_session() as session:
                 cycle = session.query(TradeCycle).filter_by(cycle_id=state.cycle_id).first()
-                if cycle:
-                    cycle.status = state.status.value
-                    cycle.position_a_id = state.broker_a_position_id
-                    cycle.position_b_id = state.broker_b_position_id
-                    cycle.opened_time = state.opened_time
-                    cycle.closed_time = state.closed_time
-                    cycle.exit_reason = getattr(state, 'exit_reason', None)
-                    cycle.exit_comment = getattr(state, 'exit_comment', None)
-                    session.commit()
-        except Exception as e:
-            self.logger.error(f"Error updating cycle {state.cycle_id} in database: {e}")
-    
+                if cycle is None:
+                    raise TradeStateError(f"Cycle {state.cycle_id} not found in database for update")
+                cycle.status = state.status.value
+                cycle.position_a_id = state.broker_a_position_id
+                cycle.position_b_id = state.broker_b_position_id
+                cycle.opened_time = state.opened_time
+                cycle.closed_time = state.closed_time
+                cycle.exit_reason = getattr(state, 'exit_reason', None)
+                cycle.exit_comment = getattr(state, 'exit_comment', None)
+                session.commit()
+
+        self._with_db_retries(_write, f"Updating cycle {state.cycle_id} (status={state.status.value})")
+
     def save_trade(self, trade: Trade) -> None:
         """
         Save a trade to the database.
-        
+
         Args:
             trade: Trade to save
+
+        Raises:
+            TradeStatePersistenceError: If the save cannot be persisted after retrying.
         """
-        try:
+        def _write():
             with self.db.get_session() as session:
                 session.add(trade)
                 session.commit()
-        except Exception as e:
-            self.logger.error(f"Error saving trade: {e}")
-    
+
+        self._with_db_retries(_write, "Saving trade")
+
     def save_position(self, position: PositionModel) -> None:
         """
         Save a position to the database.
-        
+
         Args:
             position: Position to save
+
+        Raises:
+            TradeStatePersistenceError: If the save cannot be persisted after retrying.
         """
-        try:
+        def _write():
             with self.db.get_session() as session:
                 session.add(position)
                 session.commit()
-        except Exception as e:
-            self.logger.error(f"Error saving position: {e}")
-    
+
+        self._with_db_retries(_write, "Saving position")
+
     def save_order(self, order: OrderModel) -> None:
         """
         Save an order to the database.
-        
+
         Args:
             order: Order to save
+
+        Raises:
+            TradeStatePersistenceError: If the save cannot be persisted after retrying.
         """
-        try:
+        def _write():
             with self.db.get_session() as session:
                 session.add(order)
                 session.commit()
-        except Exception as e:
-            self.logger.error(f"Error saving order: {e}")
+
+        self._with_db_retries(_write, "Saving order")
     
     def cleanup_completed_cycles(self, max_completed: int = 1000) -> int:
         """

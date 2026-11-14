@@ -16,8 +16,8 @@ from ..core.config import get_config
 from ..core.logging import get_logger
 from ..core.database import get_database
 from ..models.risk_violations import RiskViolation as RiskViolationModel
-from ..execution.order_manager import OrderManager
-from ..execution.trade_state import TradeStateManager, TradeState
+from ..execution.order_manager import OrderManager, get_order_manager
+from ..execution.trade_state import TradeStateManager, TradeState, get_trade_state_manager
 from .types import RiskSeverity, RiskViolation, RiskCheckResult
 from .risk_checks import (
     RiskCheck,
@@ -66,12 +66,29 @@ class RiskEngine:
     - Risk violation tracking
     """
     
-    def __init__(self):
-        """Initialize the risk engine."""
+    def __init__(
+        self,
+        order_manager: Optional[OrderManager] = None,
+        trade_state_manager: Optional[TradeStateManager] = None,
+    ):
+        """
+        Initialize the risk engine.
+
+        Args:
+            order_manager: Optional override, for tests. Defaults to the
+                shared process-wide singleton - the risk engine, execution
+                worker, and the dashboard routes must all observe the same
+                broker connections and the same trade state, or emergency
+                stop and risk checks can silently operate on an empty,
+                disconnected copy of the world while the real one trades on.
+            trade_state_manager: Optional override, for tests. Same reasoning.
+        """
         self.logger = get_logger("risk.engine")
         self.db = get_database()
-        self.order_manager = OrderManager()
-        self.trade_state_manager = TradeStateManager()
+        self.order_manager = order_manager if order_manager is not None else get_order_manager()
+        self.trade_state_manager = (
+            trade_state_manager if trade_state_manager is not None else get_trade_state_manager()
+        )
         
         # Risk checks
         self.checks: Dict[str, RiskCheck] = {}

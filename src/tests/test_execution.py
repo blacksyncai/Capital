@@ -35,9 +35,18 @@ from src.execution.trade_state import (
     TradeState,
     ReconciliationResult,
     TradeStateError,
+    TradeStatePersistenceError,
     PositionMismatchError,
 )
+from src.tests.db_test_helpers import SQLiteTestDatabase
 from src.execution.execution_worker import ExecutionWorker
+from src.execution.broker_process import (
+    BrokerCommand,
+    BrokerCommandResult,
+    BrokerProcessUnavailableError,
+    AccountIdentityError,
+    _dispatch,
+)
 from src.models.trade_cycles import TradeCycle, CycleStatus
 from src.tests.test_broker_simulator import (
     SimulatedBroker,
@@ -63,18 +72,138 @@ def mock_justmarkets_broker():
     return broker
 
 
+class FakeBrokerProcessClient:
+    """
+    In-process stand-in for BrokerProcessClient, used so OrderManager's own
+    orchestration logic (validation, retries, paired-order concurrency
+    bookkeeping, one-sided flatten, reconciliation calls) can be tested
+    quickly and deterministically, without paying for a real OS process per
+    test. Real process isolation itself (startup, account-identity
+    enforcement, true concurrency, crash/restart) is covered separately and
+    thoroughly in test_broker_process.py against the real BrokerProcessClient.
+
+    Commands execute synchronously against the given broker through the
+    production `_dispatch` function, so this exercises the same dispatch
+    and identity-check logic the real worker process runs.
+    """
+
+    def __init__(self, broker_id, broker):
+        self.broker_id = broker_id
+        self.broker = broker
+        self.ready = True
+        self._alive = True
+        self.last_status_error = None
+        self.last_known_account_id = getattr(broker, "login", None)
+        self.restart_count = 0
+        self._results = {}
+
+    def is_alive(self):
+        return self._alive
+
+    def start(self):
+        self._alive = True
+        self.ready = True
+        return True
+
+    def restart(self):
+        self.restart_count += 1
+        self._alive = True
+        self.ready = True
+        self.last_status_error = None
+        return True
+
+    def stop(self, timeout=5.0):
+        self._alive = False
+        self.ready = False
+
+    def _validate_identity(self):
+        expected = str(getattr(self.broker, "login", None) or "")
+        info = self.broker.get_account_info()
+        if not expected or info.account_id != expected:
+            raise AccountIdentityError(
+                f"Account identity mismatch for {self.broker_id}: "
+                f"connected={info.account_id}, expected={expected}"
+            )
+
+    def submit(self, command_type, payload=None):
+        if not self._alive:
+            raise BrokerProcessUnavailableError(f"{self.broker_id} worker process is not running")
+
+        command_id = f"{self.broker_id}_{uuid.uuid4().hex[:8]}"
+        command = BrokerCommand(command_id=command_id, command_type=command_type, payload=payload or {})
+        try:
+            value = _dispatch(self.broker, command, self._validate_identity)
+            self._results[command_id] = BrokerCommandResult(command_id=command_id, success=True, result=value)
+        except AccountIdentityError as e:
+            self._results[command_id] = BrokerCommandResult(
+                command_id=command_id, success=False, error=str(e), error_type="AccountIdentityError"
+            )
+        except Exception as e:
+            self._results[command_id] = BrokerCommandResult(
+                command_id=command_id, success=False, error=str(e), error_type=type(e).__name__
+            )
+        return command_id
+
+    def collect(self, command_id, timeout=None):
+        if command_id not in self._results and not self._alive:
+            raise BrokerProcessUnavailableError(f"{self.broker_id} worker process is not running")
+        return self._results.pop(command_id)
+
+    def call(self, command_type, payload=None, timeout=None):
+        command_id = self.submit(command_type, payload)
+        return self.collect(command_id, timeout=timeout)
+
+
+def make_tsm() -> TradeStateManager:
+    """
+    Build a TradeStateManager backed by a real (in-memory SQLite) database
+    instead of the real-but-unreachable Postgres get_database() would
+    otherwise return here. Trade-state persistence failures now raise
+    instead of being silently swallowed (see trade_state.py), so any test
+    that exercises persistence needs a database that actually works.
+    """
+    tsm = TradeStateManager()
+    tsm.db = SQLiteTestDatabase()
+    return tsm
+
+
+def seed_cycle_row(tsm: TradeStateManager, cycle_id: str, status: CycleStatus = CycleStatus.OPEN,
+                    instrument: str = "XAUUSD", lot_size: float = 0.01, direction: str = "BUY_SELL") -> None:
+    """
+    Insert a matching TradeCycle row directly, for tests that build a
+    TradeState in memory (bypassing create_cycle) but still exercise a
+    path that updates the cycle's row (close_cycle, emergency_close_all).
+    _update_cycle_in_db now requires the row to already exist - a cycle
+    that was never durably created shouldn't be silently "updatable".
+    """
+    with tsm.db.get_session() as session:
+        session.add(TradeCycle(
+            cycle_id=cycle_id, strategy_id="paired_exit", strategy_name="Paired Exit",
+            instrument=instrument, broker_a_id="vantage", broker_b_id="justmarkets",
+            lot_size=lot_size, direction=direction, initiated_time=datetime.utcnow(),
+            status=status.value,
+        ))
+        session.commit()
+
+
 @pytest.fixture
 def order_manager():
-    """Create an order manager with simulated brokers."""
+    """Create an order manager with simulated brokers, each reachable only
+    through a (fake, in-process) broker-process client - exactly like the
+    real OrderManager, which never touches a broker object directly."""
     om = OrderManager()
     vantage = create_simulated_broker("vantage", initial_balance=10000.0)
     justmarkets = create_simulated_broker("justmarkets", initial_balance=10000.0)
     vantage.connect()
     justmarkets.connect()
-    
+
     om.brokers = {
         "vantage": vantage,
         "justmarkets": justmarkets,
+    }
+    om.broker_processes = {
+        "vantage": FakeBrokerProcessClient("vantage", vantage),
+        "justmarkets": FakeBrokerProcessClient("justmarkets", justmarkets),
     }
     return om
 
@@ -262,7 +391,7 @@ class TestTradeStateManager:
     
     def test_open_trade_cycle(self):
         """Test opening a new trade cycle."""
-        tsm = TradeStateManager()
+        tsm = make_tsm()
         
         # Mock the order manager
         tsm.order_manager = Mock()
@@ -308,10 +437,11 @@ class TestTradeStateManager:
     
     def test_close_trade_cycle(self):
         """Test closing a trade cycle."""
-        tsm = TradeStateManager()
-        
+        tsm = make_tsm()
+
         # Create a cycle manually
         cycle_id = "test-001"
+        seed_cycle_row(tsm, cycle_id)
         state = TradeState(
             cycle_id=cycle_id,
             status=CycleStatus.OPEN,
@@ -347,7 +477,7 @@ class TestTradeStateManager:
     
     def test_position_reconciliation(self):
         """Test position reconciliation."""
-        tsm = TradeStateManager()
+        tsm = make_tsm()
         
         # Create a cycle with positions
         cycle_id = "test-001"
@@ -425,9 +555,16 @@ class TestTradeStateManager:
                 status=PositionStatus.OPEN,
             )
         ])
-        
-        tsm.order_manager.get_broker = Mock(side_effect=lambda bid: broker_a if bid == "vantage" else broker_b)
-        
+
+        # reconcile_positions() asks the order manager for open positions
+        # directly (OrderManager.get_open_positions) rather than reaching
+        # through get_broker() itself for live broker data - get_broker()
+        # is reserved for local, no-I/O questions like contract specs.
+        tsm.order_manager = Mock()
+        tsm.order_manager.get_open_positions = Mock(
+            side_effect=lambda bid: broker_a.get_open_positions() if bid == "vantage" else broker_b.get_open_positions()
+        )
+
         result = tsm.reconcile_positions()
         assert result.success is True
         assert len(result.mismatches) == 0
@@ -438,11 +575,12 @@ class TestEmergencyStop:
     
     def test_emergency_stop_closes_all_positions(self):
         """Test that emergency stop closes all positions."""
-        tsm = TradeStateManager()
+        tsm = make_tsm()
         
         # Create multiple cycles
         for i in range(3):
             cycle_id = f"test-{i}"
+            seed_cycle_row(tsm, cycle_id)
             state = TradeState(
                 cycle_id=cycle_id,
                 status=CycleStatus.OPEN,
@@ -473,7 +611,7 @@ class TestRestartRecovery:
     
     def test_load_cycles_from_db(self):
         """Test loading cycles from database on restart."""
-        tsm = TradeStateManager()
+        tsm = make_tsm()
         
         # Mock database with existing cycles
         mock_db = Mock()
@@ -621,28 +759,31 @@ class TestPartialFills:
 
 class TestConnectionFailures:
     """Test handling of connection failures."""
-    
-    def test_connection_failure_handling(self):
-        """Test that connection failures are handled."""
+
+    def test_order_fails_cleanly_when_broker_process_never_started(self):
+        """
+        Each broker only ever runs inside its own worker process (see
+        broker_process.py) - there is no implicit "auto-connect" anymore.
+        Placing an order against a broker_id with no running process must
+        fail cleanly (a clear OrderResult.error) rather than silently
+        succeed or raise an unhandled exception.
+        """
         om = OrderManager()
-        
-        # Create a disconnected broker
         broker = create_simulated_broker("disconnected")
-        # Don't connect it
-        
         om.brokers = {"disconnected": broker}
-        
+        # Deliberately no entry in om.broker_processes for "disconnected".
+
         request = OrderRequest(
             broker_id="disconnected",
             instrument="XAUUSD",
             side=OrderSide.BUY,
             volume=0.01,
         )
-        
+
         result = om.place_order(request)
-        
-        # Note: Current implementation auto-connects brokers, so order succeeds
-        assert result.success is True
+
+        assert result.success is False
+        assert result.error is not None
 
 
 class TestMaxRetries:
@@ -819,7 +960,7 @@ class TestOrderManagerGetPosition:
         assert order_manager.get_position("not_a_broker", "pos-1") is None
 
     def test_get_cycle_pnl_combines_both_brokers(self):
-        tsm = TradeStateManager()
+        tsm = make_tsm()
 
         pos_a = Position(
             position_id="vantage-pos-1",
@@ -873,7 +1014,7 @@ class TestOrderManagerGetPosition:
         assert pnl["combined_pnl"] == 2.0
 
     def test_get_all_pnl_reports_for_active_cycles(self):
-        tsm = TradeStateManager()
+        tsm = make_tsm()
 
         pos_a = Position(
             position_id="vantage-pos-2",

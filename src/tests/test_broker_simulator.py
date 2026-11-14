@@ -221,6 +221,12 @@ class SimulatedBroker:
         self.partial_fills = False
         self.slippage_points = 0.0
         self.execution_delay_seconds = 0.0
+
+        # Account identity the broker worker process checks on connect and
+        # before every mutating command. Defaults to "whatever we actually
+        # connected to" so a plain SimulatedBroker is self-consistent; a test
+        # exercising an identity mismatch can override this after construction.
+        self.login = self.account_info.account_id
     
     def connect(self) -> bool:
         """Connect to simulated broker."""

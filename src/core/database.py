@@ -50,8 +50,16 @@ from .config import get_config, DatabaseConnectionConfig
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# SQLAlchemy base
-Base = declarative_base()
+# SQLAlchemy base. This must be the SAME Base every model (TradeCycle, Order,
+# Position, Trade, RiskViolation, ...) actually subclasses - they all
+# subclass models.base.Base, not a locally-declared one. Previously this
+# module declared its own separate declarative_base() that no model ever
+# used, so Database.create_tables()/drop_tables() operated on an empty
+# metadata registry: calling create_tables() created zero tables for any
+# real model, and persistence writes would fail against tables that were
+# never created (that failure was, in turn, silently swallowed by callers -
+# see trade_state.py).
+from ..models.base import Base
 
 
 class DatabaseError(Exception):

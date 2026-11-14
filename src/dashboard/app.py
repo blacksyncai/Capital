@@ -16,6 +16,8 @@ from pathlib import Path
 from ..core.config import get_config
 from ..core.logging import get_logger
 from ..execution.execution_worker import start_execution_worker, stop_execution_worker
+from ..execution.trade_state import TradeStatePersistenceError
+from ..risk.risk_engine import get_risk_engine
 from .routes import router as api_router
 
 
@@ -30,15 +32,35 @@ _app: Optional[FastAPI] = None
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
-    Start/stop the background execution worker with the app lifecycle.
+    Start/stop the background execution worker and risk engine with the
+    app lifecycle.
 
-    Without this, nothing ever calls ExecutionWorker.start(), so every
-    call that goes through it (trade/open, trade/close, emergency/stop,
-    system/reconcile) fails immediately with
-    ExecutionError("Execution worker is not running").
+    Without the execution-worker half, nothing ever calls
+    ExecutionWorker.start(), so every call that goes through it
+    (trade/open, trade/close, emergency/stop, system/reconcile) fails
+    immediately with ExecutionError("Execution worker is not running").
+
+    Without the risk-engine half, RiskEngine.initialize() was never called
+    by anything either: its own order_manager was never connected and its
+    own trade_state_manager never loaded active cycles from the database,
+    so trigger_emergency_stop()'s "close everything" pass ran against an
+    empty, disconnected copy of the world even while real trades were
+    open elsewhere. Both now share the same underlying singletons (see
+    RiskEngine.__init__ and ExecutionWorker.__init__), so initializing
+    either one here wires up the one shared order_manager/trade_state
+    the whole app actually uses.
     """
     start_execution_worker()
     logger.info("Execution worker started on application startup")
+    try:
+        get_risk_engine().initialize()
+        logger.info("Risk engine initialized on application startup")
+    except TradeStatePersistenceError as e:
+        # Refuse to come up pretending trading is safe to start if we
+        # can't even find out what cycles were already open.
+        logger.critical(f"Risk engine failed to initialize: {e}")
+        stop_execution_worker()
+        raise
     try:
         yield
     finally:
