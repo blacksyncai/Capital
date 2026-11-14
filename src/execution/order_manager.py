@@ -653,6 +653,24 @@ class OrderManager:
             self.logger.error(f"Error getting account info from {broker_id}: {e}")
             return None
     
+    def get_position(self, broker_id: str, position_id: str) -> Optional[Any]:
+        """
+        Get a specific position from a broker.
+
+        Args:
+            broker_id: Broker identifier
+            position_id: Position ID
+
+        Returns:
+            Position object or None if not found
+        """
+        try:
+            broker = self.get_broker(broker_id)
+            return broker.get_position(position_id)
+        except Exception as e:
+            self.logger.error(f"Error getting position {position_id} from {broker_id}: {e}")
+            return None
+
     def get_open_positions(self, broker_id: str) -> List[Any]:
         """
         Get open positions from a broker.

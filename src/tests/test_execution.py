@@ -37,6 +37,7 @@ from src.execution.trade_state import (
     TradeStateError,
     PositionMismatchError,
 )
+from src.execution.execution_worker import ExecutionWorker
 from src.models.trade_cycles import TradeCycle, CycleStatus
 from src.tests.test_broker_simulator import (
     SimulatedBroker,
@@ -725,3 +726,200 @@ class TestSimulationMode:
         # Check that positions are closed
         assert len(vantage.get_positions()) == 0
         assert len(justmarkets.get_positions()) == 0
+
+
+class TestExecutionWorkerTaskCreation:
+    """
+    Regression tests for ExecutionWorker task-id generation.
+
+    execution_worker.py builds ExecutionTask.task_id with uuid.uuid4() in
+    open_cycle, close_cycle, emergency_stop, and reconcile, but historically
+    never imported the uuid module. That raised NameError on every call,
+    which meant the dashboard's /emergency/stop route (which calls
+    ExecutionWorker.emergency_stop) failed even though the risk engine's own
+    stop had already succeeded. These tests exercise task-id construction
+    directly (stubbing submit_task so no real asyncio loop/thread is needed)
+    and must not raise.
+    """
+
+    def _worker_with_stubbed_submit(self):
+        worker = ExecutionWorker()
+        worker.submit_task = Mock()
+        return worker
+
+    def test_emergency_stop_builds_task_without_error(self):
+        worker = self._worker_with_stubbed_submit()
+        worker.emergency_stop("test emergency")
+
+        worker.submit_task.assert_called_once()
+        task = worker.submit_task.call_args[0][0]
+        assert task.task_type == "emergency_close"
+        assert task.task_id.startswith("task_")
+        assert task.data == {"reason": "test emergency"}
+
+    def test_open_cycle_builds_task_without_error(self):
+        worker = self._worker_with_stubbed_submit()
+        worker.trade_state_manager = Mock()
+        worker.trade_state_manager.create_cycle = Mock(return_value="cycle-123")
+
+        cycle_id = worker.open_cycle(instrument="XAUUSD", lot_size=0.01)
+
+        assert cycle_id == "cycle-123"
+        worker.submit_task.assert_called_once()
+        task = worker.submit_task.call_args[0][0]
+        assert task.task_type == "open_cycle"
+        assert task.task_id.startswith("task_")
+
+    def test_close_cycle_builds_task_without_error(self):
+        worker = self._worker_with_stubbed_submit()
+        worker.close_cycle("cycle-123", reason="manual", comment="test")
+
+        worker.submit_task.assert_called_once()
+        task = worker.submit_task.call_args[0][0]
+        assert task.task_type == "close_cycle"
+        assert task.task_id.startswith("task_")
+
+    def test_reconcile_builds_task_without_error(self):
+        worker = self._worker_with_stubbed_submit()
+        worker.reconcile()
+
+        worker.submit_task.assert_called_once()
+        task = worker.submit_task.call_args[0][0]
+        assert task.task_type == "reconcile"
+        assert task.task_id.startswith("task_")
+
+
+class TestOrderManagerGetPosition:
+    """
+    Regression tests for OrderManager.get_position.
+
+    TradeStateManager.get_cycle_pnl() calls order_manager.get_position(),
+    but OrderManager previously had no such method (only get_open_positions
+    existed). The AttributeError was caught and logged inside get_cycle_pnl,
+    so combined P&L silently came back empty for every cycle with no visible
+    error. These tests cover both the direct delegation and the combined
+    P&L calculation that depends on it.
+    """
+
+    def test_get_position_delegates_to_broker(self, order_manager):
+        vantage = order_manager.brokers["vantage"]
+        order = vantage.place_order(
+            instrument="XAUUSD",
+            side=OrderSide.BUY,
+            volume=0.01,
+        )
+        position_id = vantage.get_positions()[0].position_id
+
+        position = order_manager.get_position("vantage", position_id)
+
+        assert position is not None
+        assert position.position_id == position_id
+
+    def test_get_position_unknown_broker_returns_none(self, order_manager):
+        assert order_manager.get_position("not_a_broker", "pos-1") is None
+
+    def test_get_cycle_pnl_combines_both_brokers(self):
+        tsm = TradeStateManager()
+
+        pos_a = Position(
+            position_id="vantage-pos-1",
+            broker_id="vantage",
+            account_id="acc-1",
+            instrument="XAUUSD",
+            side=PositionSide.BUY,
+            volume=0.01,
+            open_price=2000.0,
+            open_time=datetime.now(),
+            current_price=2005.0,
+            profit=5.0,
+        )
+        pos_b = Position(
+            position_id="justmarkets-pos-1",
+            broker_id="justmarkets",
+            account_id="acc-2",
+            instrument="XAUUSD",
+            side=PositionSide.SELL,
+            volume=0.01,
+            open_price=2000.0,
+            open_time=datetime.now(),
+            current_price=2005.0,
+            profit=-3.0,
+        )
+
+        tsm.order_manager = Mock()
+        tsm.order_manager.get_position = Mock(
+            side_effect=lambda broker_id, position_id: (
+                pos_a if broker_id == "vantage" else pos_b
+            )
+        )
+
+        state = TradeState(
+            cycle_id="cycle-1",
+            status=CycleStatus.OPEN,
+            broker_a_position_id="vantage-pos-1",
+            broker_b_position_id="justmarkets-pos-1",
+            instrument="XAUUSD",
+            lot_size=0.01,
+            direction="BUY_SELL",
+            opened_time=datetime.now(),
+        )
+        tsm.active_cycles["cycle-1"] = state
+
+        pnl = tsm.get_cycle_pnl("cycle-1")
+
+        assert pnl is not None
+        assert pnl["broker_a_pnl"] == 5.0
+        assert pnl["broker_b_pnl"] == -3.0
+        assert pnl["combined_pnl"] == 2.0
+
+    def test_get_all_pnl_reports_for_active_cycles(self):
+        tsm = TradeStateManager()
+
+        pos_a = Position(
+            position_id="vantage-pos-2",
+            broker_id="vantage",
+            account_id="acc-1",
+            instrument="XAUUSD",
+            side=PositionSide.BUY,
+            volume=0.01,
+            open_price=2000.0,
+            open_time=datetime.now(),
+            current_price=2010.0,
+            profit=10.0,
+        )
+        pos_b = Position(
+            position_id="justmarkets-pos-2",
+            broker_id="justmarkets",
+            account_id="acc-2",
+            instrument="XAUUSD",
+            side=PositionSide.SELL,
+            volume=0.01,
+            open_price=2000.0,
+            open_time=datetime.now(),
+            current_price=2010.0,
+            profit=-8.0,
+        )
+
+        tsm.order_manager = Mock()
+        tsm.order_manager.get_position = Mock(
+            side_effect=lambda broker_id, position_id: (
+                pos_a if broker_id == "vantage" else pos_b
+            )
+        )
+
+        state = TradeState(
+            cycle_id="cycle-2",
+            status=CycleStatus.OPEN,
+            broker_a_position_id="vantage-pos-2",
+            broker_b_position_id="justmarkets-pos-2",
+            instrument="XAUUSD",
+            lot_size=0.01,
+            direction="BUY_SELL",
+            opened_time=datetime.now(),
+        )
+        tsm.active_cycles["cycle-2"] = state
+
+        all_pnl = tsm.get_all_pnl()
+
+        assert "cycle-2" in all_pnl
+        assert all_pnl["cycle-2"]["combined_pnl"] == 2.0

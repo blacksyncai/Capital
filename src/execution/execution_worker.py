@@ -6,6 +6,7 @@ Background worker for executing trades and managing order flow.
 
 import asyncio
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
